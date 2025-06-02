@@ -1,0 +1,24 @@
+{
+  "name": "dicen-obra",
+  "version": "1.0.0",
+  "description": "Aplicación de la obra Dicen",
+  "homepage": "https://github.com/emilianopl/dicen-obra#readme",
+  "bugs": {
+    "url": "https://github.com/emilianopl/dicen-obra/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emilianopl/dicen-obra.git"
+  },
+  "license": "ISC",
+  "author": "Emiliano Pablo López",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1"
+  }
+}
