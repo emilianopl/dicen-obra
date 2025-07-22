@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 const path = require('path');
+const os = require('os');
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -107,6 +108,27 @@ app.get('/screen2', (req, res) => res.sendFile(path.join(__dirname, 'public', 's
 
 const PORT = process.env.PORT || 8080;
 httpServer.listen(PORT, () => {
-    console.log(`Servidor Socket.IO corriendo en http://localhost:${PORT}`);
-    console.log(`Accede a la aplicación en http://localhost:${PORT}`);
+    console.log(`DICEN - OBRA`);
+    console.log(`Servidor Online`);
+
+    const networkInterfaces = os.networkInterfaces();
+    let localIp = null;
+
+    for (const name of Object.keys(networkInterfaces)) {
+        for (const net of networkInterfaces[name]) {
+            if (net.family === 'IPv4' && !net.internal) {
+                localIp = net.address;
+                break;
+            }
+        }
+        if (localIp) break;
+    }
+
+    console.log('Puedes acceder a la aplicación en tu navegador:');
+    console.log(`- En esta computadora: http://localhost:${PORT}`);
+    if (localIp) {
+        console.log(`- En otros dispositivos de la misma red: http://${localIp}:${PORT}`);
+    } else {
+        console.log('- No se pudo detectar la IP local para otros dispositivos.');
+    }
 });
