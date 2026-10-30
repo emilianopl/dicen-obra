@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dicen - Estado</title>
+    <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body class="status-page">
+    <h1>Estado de la obra</h1>
+    <p class="summary" id="summary">Cargando…</p>
+    <table>
+        <thead>
+            <tr><th>Pantalla</th><th>Mitad</th><th>Desfase</th><th>Velocidad</th><th>Reproduciendo</th><th>Último reporte</th></tr>
+        </thead>
+        <tbody id="screens"></tbody>
+    </table>
+
+    <script>
+        // Desfase: verde hasta 50 ms, amarillo hasta 250 ms, rojo más arriba
+        function driftClass(d) {
+            const a = Math.abs(d);
+            return a < 0.05 ? 'ok' : a < 0.25 ? 'warn' : 'bad';
+        }
+
+        function cell(text, cls) {
+            const td = document.createElement('td');
+            td.textContent = text;
+            if (cls) td.className = cls;
+            return td;
+        }
+
+        async function refresh() {
+            try {
+                const res = await fetch('/api/estado', { cache: 'no-store' });
+                const data = await res.json();
+                const last = data.lastToggleAt ? new Date(data.lastToggleAt).toLocaleTimeString() : 'nunca';
+                document.getElementById('summary').textContent =
+                    `Mitad actual: ${data.half} · Cambios: ${data.toggles} (último ${last}) · Servidor activo hace ${Math.round(data.uptimeS / 60)} min`;
+                const tbody = document.getElementById('screens');
+                tbody.replaceChildren();
+                for (const s of data.screens) {
+                    const r = s.report;
+                    const tr = document.createElement('tr');
+                    tr.append(
+                        cell(s.screen),
+                        cell(r ? r.half : '-'),
+                        r ? cell(`${(r.drift * 1000).toFixed(0)} ms`, driftClass(r.drift)) : cell('-'),
+                        cell(r ? r.rate.toFixed(3) : '-'),
+                        r ? cell(r.blocked ? 'bloqueado (tocar Iniciar)' : r.playing ? 'sí' : 'no', r.blocked || !r.playing ? 'bad' : 'ok') : cell('-'),
+                        cell(r ? `hace ${Math.round((Date.now() - r.at) / 1000)} s` : '-'),
+                    );
+                    tbody.append(tr);
+                }
+                if (!data.screens.length) {
+                    const tr = document.createElement('tr');
+                    tr.append(cell('No hay pantallas conectadas'));
+                    tbody.append(tr);
+                }
+            } catch (e) {
+                document.getElementById('summary').textContent = 'No se pudo contactar al servidor.';
+            }
+        }
+
+        refresh();
+        setInterval(refresh, 1000);
+    </script>
+</body>
+</html>
