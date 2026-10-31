@@ -1,214 +1,268 @@
 // public/js/main.js
+// Cada pantalla tiene dos <video> con el mismo archivo (pausa y play pegados en dos mitades).
+// Uno se ve y suena; el otro espera listo en segundo plano. Así, el cambio de mitad y la
+// vuelta del bucle se hacen sin cortes: se prepara el de atrás y recién ahí se intercambian.
 document.addEventListener('DOMContentLoaded', () => {
-    if (typeof LOCAL_VIDEO_LOGICAL_ID === 'undefined' || typeof LOCAL_VIDEO_ELEMENT_ID === 'undefined') {
-        console.error('IDs de video no definidos en el HTML (LOCAL_VIDEO_LOGICAL_ID o LOCAL_VIDEO_ELEMENT_ID).');
-        // alert('Error de configuración: IDs de video no definidos.'); // Podría ser intrusivo
+    if (typeof SCREEN_ID === 'undefined' || !window.DicenSync) {
+        console.error('Falta SCREEN_ID en el HTML o no se cargó /js/sync-math.js.');
         return;
     }
+    const Sync = window.DicenSync;
+    const DEBUG = new URLSearchParams(location.search).has('debug');
+    const log = (...args) => { if (DEBUG) console.log(...args); };
 
-    const localVideo = document.getElementById(LOCAL_VIDEO_ELEMENT_ID);
+    const players = Array.from(document.querySelectorAll('.video-wrapper video'));
     const overlayButton = document.querySelector('.overlay-button');
     const initialPlayButton = document.getElementById('initialPlayButton');
-
-    if (!localVideo) {
-        console.error(`Elemento de video con ID '${LOCAL_VIDEO_ELEMENT_ID}' no encontrado.`);
+    if (players.length !== 2) {
+        console.error('Se esperaban dos elementos <video> en .video-wrapper.');
         return;
     }
-    if (!overlayButton) {
-        console.error("Elemento '.overlay-button' no encontrado.");
-        // No es crítico para la funcionalidad base si initialPlayButton funciona
-    }
-    if (!initialPlayButton) {
-        console.error("Elemento '#initialPlayButton' no encontrado.");
-        // Podría ser un problema si es la única forma de iniciar el video
-    }
 
-    console.log(`Pantalla configurada para video lógico: ${LOCAL_VIDEO_LOGICAL_ID}`);
+    // Cuánto antes del final de la mitad se hace el relevo al video de atrás
+    const BOUNDARY_MARGIN_S = 0.05;
 
-    const socket = io();
-    let isProgrammaticChange = false;
+    let active = players[0];
+    let standby = players[1];
+    let halfDuration = null;
+    let state = null;            // { half, epoch } recibido del servidor
+    let syncConfig = { hardSeekThreshold: 1, deadband: 0.03, gain: 0.5, maxRateDelta: 0.05, correctionIntervalMs: 500, clockSyncIntervalMs: 5000, toggleDebounceMs: 400 };
+    let clockSamples = [];
+    let clockOffset = 0;
+    let switching = false;
+    let switchStartedAt = 0;
+    let switchId = 0;
+    let seekLead = 0.15;         // estimación (s) de lo que tarda un seek + play; se ajusta sola
+    let lastDrift = 0;
+    let playBlocked = false;     // el navegador bloqueó el autoplay con sonido
 
-    socket.on('connect', () => {
-        console.log(`Conectado al servidor Socket.IO con id: ${socket.id}`);
-        socket.emit('registerScreen', { logicalVideoId: LOCAL_VIDEO_LOGICAL_ID });
-    });
+    const serverNow = () => Date.now() + clockOffset;
+    const ready = () => state !== null && halfDuration !== null;
 
-    socket.on('videoAction', (data) => {
-        if (!data || !data.action || typeof data.time !== 'number' || !data.logicalVideoId) {
-            console.error("VideoAction inválida recibida del servidor:", data);
-            return;
+    function setVisible(el) {
+        for (const p of players) {
+            const on = p === el;
+            p.classList.toggle('visible', on);
+            p.muted = !on;
         }
-        const targetTime = parseFloat(data.time);
-        console.log(`[Remoto] Acción '${data.action}' en t=${targetTime.toFixed(2)} (originada por ${data.logicalVideoId}). Aplicando a ${LOCAL_VIDEO_LOGICAL_ID}.`);
-        
-        isProgrammaticChange = true;
-        try {
-            if (data.action === 'play') {
-                if (Math.abs(localVideo.currentTime - targetTime) > 0.5 || localVideo.paused) {
-                     if (!localVideo.seeking) localVideo.currentTime = targetTime;
-                }
-                localVideo.play().catch(e => console.warn("Error al reproducir (remoto):", e));
-                if (initialPlayButton && !initialPlayButton.classList.contains('hidden')) {
-                    initialPlayButton.classList.add('hidden');
-                }
-            } else if (data.action === 'pause') {
-                if (Math.abs(localVideo.currentTime - targetTime) > 0.5) {
-                    if (!localVideo.seeking) localVideo.currentTime = targetTime;
-                }
-                localVideo.pause();
-            } else if (data.action === 'seek') {
-                if (Math.abs(localVideo.currentTime - targetTime) > 0.3 && !localVideo.seeking) {
-                    localVideo.currentTime = targetTime;
-                }
-            }
-        } finally {
-            setTimeout(() => { isProgrammaticChange = false; }, 70);
-        }
-    });
-
-    socket.on('requestCurrentState', (data) => {
-        if (!data || !data.requestingSocketId) {
-            console.error("requestCurrentState inválido:", data);
-            return;
-        }
-        console.log(`Servidor pide estado actual para ${data.requestingSocketId}`);
-        const currentState = { time: localVideo.currentTime, paused: localVideo.paused };
-        socket.emit('sendCurrentState', { state: currentState, targetSocketId: data.requestingSocketId });
-    });
-
-    socket.on('applyInitialState', (data) => {
-        if (!data || !data.state || typeof data.state.time !== 'number' || typeof data.state.paused !== 'boolean') {
-            console.error("applyInitialState inválido:", data);
-            return;
-        }
-        console.log(`[Remoto] Aplicando estado inicial (desde maestro: ${data.fromMaster}): T=${data.state.time.toFixed(2)}, Pausado=${data.state.paused}`);
-        isProgrammaticChange = true;
-        try {
-            const applyStateLogic = () => {
-                isProgrammaticChange = true; // Re-asegurar
-                const targetTime = parseFloat(data.state.time);
-
-                if (Math.abs(localVideo.currentTime - targetTime) > 0.5 || localVideo.paused !== data.state.paused) {
-                    localVideo.currentTime = targetTime;
-                }
-
-                if (data.state.paused) {
-                    localVideo.pause();
-                    if (initialPlayButton) { // Lógica para el botón de play inicial
-                        // Mostrar si está pausado en t=0 y no vino de un maestro (es el primer cliente)
-                        // O si vino de un maestro que también está pausado en t=0 (raro, pero posible)
-                        if (targetTime < 0.1 && !data.state.fromMasterPlaying) { // (necesitaríamos un flag 'fromMasterPlaying')
-                             // Simplificamos: si está pausado y el tiempo es casi 0, mostrar botón
-                            if (targetTime < 0.1) initialPlayButton.classList.remove('hidden');
-                            else initialPlayButton.classList.add('hidden'); // Ocultar si está pausado pero no al inicio
-                        } else {
-                            initialPlayButton.classList.add('hidden');
-                        }
-                    }
-                } else { // Si no está pausado (debe reproducir)
-                    localVideo.play().catch(e => console.warn("Error al reproducir (estado inicial):", e));
-                    if (initialPlayButton) initialPlayButton.classList.add('hidden');
-                }
-                setTimeout(() => { isProgrammaticChange = false; }, 70);
-            };
-
-            if (localVideo.readyState >= HTMLMediaElement.HAVE_METADATA || data.state.time === 0) {
-                applyStateLogic();
-            } else {
-                localVideo.addEventListener('loadedmetadata', function onLoadedMetadata() {
-                    applyStateLogic();
-                    localVideo.removeEventListener('loadedmetadata', onLoadedMetadata); // Limpiar listener
-                });
-            }
-        } catch (e) {
-             console.error("Error en applyInitialState:", e);
-             isProgrammaticChange = false;
-        }
-    });
-
-    socket.on('disconnect', (reason) => console.log(`Desconectado del servidor Socket.IO: ${reason}`));
-    socket.on('connect_error', (error) => console.error('Error de conexión Socket.IO:', error));
-
-    function sendVideoEventToServer(actionType) {
-        if (isProgrammaticChange) return;
-        if (typeof localVideo.currentTime !== 'number') {
-            console.warn("sendVideoEventToServer: currentTime no es un número, no enviando evento.");
-            return;
-        }
-        const eventData = {
-            action: actionType,
-            time: localVideo.currentTime,
-            logicalVideoId: LOCAL_VIDEO_LOGICAL_ID
-        };
-        console.log(`Enviando acción local '${eventData.action}' en t=${eventData.time.toFixed(2)} para ${eventData.logicalVideoId}`);
-        socket.emit('videoAction', eventData);
     }
 
-    localVideo.addEventListener('play', () => sendVideoEventToServer('play'));
-    localVideo.addEventListener('pause', () => sendVideoEventToServer('pause'));
-    // El 'seek' se envía solo desde el salto del overlay: el evento 'seeked' también
-    // se dispara al dar la vuelta el loop y al aplicar seeks remotos, y eso generaba rebotes.
-
-    // Reintenta play() sin bloquear la pantalla (un alert() en kiosco deja un modal colgado)
-    function playWithRetry(attempt = 1) {
-        return localVideo.play().catch(e => {
-            console.warn(`Error al reproducir (intento ${attempt}):`, e);
-            if (attempt < 5) {
-                return new Promise(resolve => setTimeout(resolve, 1000 * attempt))
-                    .then(() => playWithRetry(attempt + 1));
+    function tryPlay(el) {
+        return el.play().catch(e => {
+            console.warn(`No se pudo reproducir: ${e.name}`);
+            if (e.name === 'NotAllowedError') {
+                playBlocked = true;
+                if (initialPlayButton) initialPlayButton.classList.remove('hidden');
             }
             throw e;
         });
     }
 
-    if (initialPlayButton) {
-        initialPlayButton.addEventListener('click', () => {
-            console.log('Botón de Play Inicial presionado.');
-            playWithRetry().then(() => {
-                console.log('Reproducción iniciada por el botón inicial.');
-                initialPlayButton.classList.add('hidden');
-                // El evento 'play' del video se encargará de llamar a sendVideoEventToServer
-            }).catch(e => {
-                console.error("No se pudo iniciar el video con el botón inicial:", e);
-            });
+    // Tiempo del video que corresponde ahora, en la mitad actual
+    function currentTarget() {
+        return Sync.targetTime(serverNow(), state.epoch, halfDuration, state.half);
+    }
+
+    // Deja el video de atrás en el comienzo de la mitad actual, listo para la vuelta del bucle
+    function prepareStandby() {
+        if (!ready()) return;
+        standby.pause();
+        standby.playbackRate = 1;
+        standby.currentTime = state.half * halfDuration;
+        standby.dataset.preparedHalf = String(state.half);
+    }
+
+    function promote(next, startedAt) {
+        const prev = active;
+        active = next;
+        standby = prev;
+        setVisible(active);
+        prev.pause();
+        switching = false;
+        if (startedAt) {
+            const measured = (performance.now() - startedAt) / 1000;
+            seekLead = Math.min(1, 0.7 * seekLead + 0.3 * measured);
+        }
+        prepareStandby();
+    }
+
+    // Lleva el video de atrás al punto exacto que marca el reloj y lo pone al frente
+    function switchToTarget() {
+        if (!ready() || playBlocked) return;
+        const id = ++switchId;
+        switching = true;
+        switchStartedAt = performance.now();
+        const next = standby;
+        const base = state.half * halfDuration;
+        let pos = currentTarget() - base + seekLead;
+        if (pos >= halfDuration) pos -= halfDuration;
+        const startedAt = performance.now();
+        next.dataset.preparedHalf = '';
+        next.currentTime = base + pos;
+        next.addEventListener('seeked', () => {
+            if (id !== switchId) return;
+            tryPlay(next).then(() => {
+                if (id !== switchId) return;
+                promote(next, startedAt);
+                log(`Cambio a mitad ${state.half} (seek ${(performance.now() - startedAt).toFixed(0)} ms)`);
+            }).catch(() => { if (id === switchId) switching = false; });
+        }, { once: true });
+    }
+
+    // Relevo al final de la mitad: el video de atrás ya está en el segundo 0 de la mitad
+    function watchBoundary() {
+        requestAnimationFrame(watchBoundary);
+        if (!ready() || switching || playBlocked) return;
+        const end = (state.half + 1) * halfDuration;
+        if (active.currentTime < end - BOUNDARY_MARGIN_S && !active.ended) return;
+        if (standby.dataset.preparedHalf === String(state.half) && !standby.seeking) {
+            const id = ++switchId;
+            switching = true;
+            switchStartedAt = performance.now();
+            const next = standby;
+            tryPlay(next).then(() => {
+                if (id === switchId) promote(next);
+            }).catch(() => { if (id === switchId) switching = false; });
+        } else {
+            switchToTarget();
+        }
+    }
+
+    // Corrección suave de la deriva: ajusta la velocidad; si el desfase es grande, hace seek
+    function correct() {
+        // Si un cambio quedó colgado (un seek que nunca terminó), se vuelve a intentar
+        if (switching && performance.now() - switchStartedAt > 3000) {
+            console.warn('Cambio de video demorado, reintentando.');
+            switching = false;
+            switchToTarget();
+            return;
+        }
+        if (!ready() || switching || playBlocked) return;
+        const pos = active.currentTime - state.half * halfDuration;
+        if (pos < -BOUNDARY_MARGIN_S || pos > halfDuration + BOUNDARY_MARGIN_S) {
+            switchToTarget(); // está en la mitad equivocada
+            return;
+        }
+        const target = Sync.positionInHalf(serverNow(), state.epoch, halfDuration);
+        lastDrift = Sync.drift(pos, target, halfDuration);
+        if (Math.abs(lastDrift) > syncConfig.hardSeekThreshold) {
+            log(`Desfase de ${lastDrift.toFixed(2)} s: seek`);
+            switchToTarget();
+            return;
+        }
+        active.playbackRate = Sync.playbackRateFor(lastDrift, syncConfig);
+        if (active.paused) tryPlay(active).catch(() => {});
+    }
+
+    let correctionTimer = null;
+    function scheduleCorrection() {
+        clearInterval(correctionTimer);
+        correctionTimer = setInterval(correct, syncConfig.correctionIntervalMs);
+    }
+
+    // --- Reloj ---
+    const socket = io();
+
+    function syncClock() {
+        if (!socket.connected) return;
+        const sentAt = Date.now();
+        socket.timeout(2000).emit('timeSync', (err, serverTime) => {
+            if (err || typeof serverTime !== 'number') return;
+            clockSamples.push(Sync.clockSample(sentAt, serverTime, Date.now()));
+            if (clockSamples.length > 10) clockSamples.shift();
+            clockOffset = Sync.bestOffset(clockSamples);
         });
     }
 
-    // Ignora clics repetidos dentro de esta ventana (toques dobles o insistentes)
-    const JUMP_DEBOUNCE_MS = 400;
-    let lastJumpAt = 0;
-
-    if (overlayButton) {
-        overlayButton.addEventListener('click', () => {
-            const now = Date.now();
-            if (now - lastJumpAt < JUMP_DEBOUNCE_MS) {
-                console.log('Clic ignorado (debounce).');
-                return;
-            }
-
-            if (initialPlayButton && !initialPlayButton.classList.contains('hidden')) {
-                console.log("Botón de play inicial todavía visible, no ejecutar salto. Clickea el botón de play primero.");
-                // Opcionalmente, hacer que este click también funcione como el initialPlayButton si está visible
-                // initialPlayButton.click(); 
-                return;
-            }
-
-            if (localVideo.readyState < HTMLMediaElement.HAVE_METADATA || isNaN(localVideo.duration) || localVideo.duration === Infinity) {
-                console.warn("Metadatos/Duración del video no disponibles para el salto.");
-                return;
-            }
-            lastJumpAt = now;
-            const jumpAmount = localVideo.duration / 2;
-            // Dar la vuelta en vez de topear al final: desde la segunda mitad vuelve a la primera
-            const newTime = (localVideo.currentTime + jumpAmount) % localVideo.duration;
-
-            console.log(`Botón de salto. Tiempo actual: ${localVideo.currentTime.toFixed(2)}, Duración: ${localVideo.duration.toFixed(2)}, Salto: ${jumpAmount.toFixed(2)}, Nuevo Tiempo: ${newTime.toFixed(2)}`);
-            localVideo.currentTime = newTime;
-            sendVideoEventToServer('seek');
-            if (localVideo.paused) { // Si estaba pausado, que siga reproduciendo desde el nuevo punto
-                playWithRetry().catch(e => console.warn("Error al intentar reproducir después del salto:", e));
-                // El evento 'play' también llamará a sendVideoEventToServer
-            }
-        });
+    let clockTimer = null;
+    function scheduleClockSync() {
+        clearInterval(clockTimer);
+        clockTimer = setInterval(syncClock, syncConfig.clockSyncIntervalMs);
     }
+
+    // --- Servidor ---
+    socket.on('connect', () => {
+        log(`Conectado: ${socket.id}`);
+        clockSamples = [];
+        for (let i = 0; i < 5; i++) setTimeout(syncClock, i * 100);
+        socket.emit('hello', { screen: SCREEN_ID });
+    });
+
+    socket.on('state', (s) => {
+        if (!s || (s.half !== 0 && s.half !== 1) || typeof s.epoch !== 'number') {
+            console.error('Estado inválido recibido del servidor:', s);
+            return;
+        }
+        if (!clockSamples.length && typeof s.serverNow === 'number') clockOffset = s.serverNow - Date.now();
+        if (s.sync) {
+            syncConfig = { ...syncConfig, ...s.sync };
+            scheduleCorrection();
+            scheduleClockSync();
+        }
+        const changed = !state || state.half !== s.half || state.epoch !== s.epoch;
+        state = { half: s.half, epoch: s.epoch };
+        log(`Estado: mitad ${state.half}`);
+        if (changed) switchToTarget();
+    });
+
+    socket.on('disconnect', (reason) => console.warn(`Desconectado del servidor: ${reason}`));
+    socket.on('connect_error', (error) => console.warn('Error de conexión:', error.message));
+
+    setInterval(() => {
+        if (!socket.connected) return;
+        socket.emit('report', {
+            screen: SCREEN_ID,
+            half: state ? state.half : null,
+            drift: Number(lastDrift.toFixed(3)),
+            rate: Number(active.playbackRate.toFixed(3)),
+            playing: !active.paused,
+            blocked: playBlocked,
+            seekLead: Number(seekLead.toFixed(3)),
+        });
+    }, 2000);
+
+    // --- Videos ---
+    function onMetadata() {
+        if (players.some(p => p.readyState < HTMLMediaElement.HAVE_METADATA)) return;
+        halfDuration = active.duration / 2;
+        log(`Duración ${active.duration.toFixed(2)} s, mitad ${halfDuration.toFixed(2)} s`);
+        switchToTarget();
+    }
+    for (const p of players) {
+        if (p.readyState >= HTMLMediaElement.HAVE_METADATA) onMetadata();
+        else p.addEventListener('loadedmetadata', onMetadata, { once: true });
+    }
+
+    // --- Interacción ---
+    let lastToggleAt = 0;
+    function onToggle(event) {
+        event.preventDefault();
+        const now = Date.now();
+        if (now - lastToggleAt < syncConfig.toggleDebounceMs) return;
+        lastToggleAt = now;
+        if (playBlocked) {
+            unlock();
+            return;
+        }
+        if (socket.connected) {
+            socket.emit('toggle');
+        } else if (state) {
+            // Sin servidor la pantalla sigue funcionando sola; al reconectar manda el servidor
+            state = { ...state, half: 1 - state.half };
+            switchToTarget();
+        }
+    }
+
+    function unlock() {
+        playBlocked = false;
+        if (initialPlayButton) initialPlayButton.classList.add('hidden');
+        switchToTarget();
+    }
+
+    if (overlayButton) overlayButton.addEventListener('pointerup', onToggle);
+    if (initialPlayButton) initialPlayButton.addEventListener('pointerup', (e) => { e.preventDefault(); unlock(); });
+
+    setVisible(active);
+    scheduleCorrection();
+    requestAnimationFrame(watchBoundary);
 });

@@ -1,9 +1,13 @@
-// video-sync-app/server.js
+// server.js
+// El servidor es la fuente de verdad: guarda qué mitad del video se ve (pausa o play)
+// y un reloj de referencia. Las pantallas calculan su posición a partir de ese reloj,
+// así que no dependen unas de otras y se corrigen solas si se desfasan o se reconectan.
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 const path = require('path');
 const os = require('os');
+const config = require('./config');
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -17,118 +21,98 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Guardar sockets conectados y su tipo de video lógico
-const connectedSockets = new Map(); // socket.id -> { logicalVideoId: 'videoA' or 'videoB' }
+// Estado compartido de la obra
+const state = {
+    half: 0,              // 0 = primera mitad del archivo, 1 = segunda mitad
+    epoch: Date.now(),    // instante (ms) en que ambas mitades estaban en su segundo 0
+    toggles: 0,
+    lastToggleAt: 0,
+};
+const startedAt = Date.now();
+
+// socket.id -> { screen, connectedAt, report }
+const screens = new Map();
+
+function publicState() {
+    return { half: state.half, epoch: state.epoch, serverNow: Date.now(), sync: config.sync };
+}
 
 io.on('connection', (socket) => {
-    console.log(`Nuevo cliente conectado: ${socket.id}`);
-
-    socket.on('registerScreen', (data) => {
-        if (!data || !data.logicalVideoId) {
-            console.error(`Registro inválido de socket ${socket.id}: datos faltantes.`);
-            return;
-        }
-        connectedSockets.set(socket.id, { logicalVideoId: data.logicalVideoId });
-        console.log(`Socket ${socket.id} registrado para ${data.logicalVideoId}. Total conectados: ${connectedSockets.size}`);
-
-        // Sincronización inicial
-        if (connectedSockets.size > 1) {
-            let masterSocketId = null;
-            // Encontrar cualquier otro socket que no sea el actual para pedir estado
-            for (const [id] of connectedSockets) {
-                if (id !== socket.id) {
-                    masterSocketId = id;
-                    break;
-                }
-            }
-            if (masterSocketId) {
-                console.log(`Pidiendo estado a ${masterSocketId} para nuevo socket ${socket.id}`);
-                io.to(masterSocketId).emit('requestCurrentState', {
-                    requestingSocketId: socket.id
-                });
-            }
-        } else {
-            // Si es el primer cliente, enviar estado pausado en t=0
-            socket.emit('applyInitialState', {
-                state: { time: 0, paused: true },
-                fromMaster: false
-            });
-            console.log(`Enviando estado por defecto (pausado) a primer cliente ${socket.id}`);
-        }
+    socket.on('hello', (data) => {
+        const screen = data && typeof data.screen === 'string' ? data.screen : 'desconocida';
+        screens.set(socket.id, { screen, connectedAt: Date.now(), report: null });
+        console.log(`Pantalla conectada: ${screen} (${socket.id}). Total: ${screens.size}`);
+        socket.emit('state', publicState());
     });
 
-    socket.on('sendCurrentState', (data) => {
-        // data = { state: { time: ..., paused: ... }, targetSocketId: 'id_del_socket_que_pidio' }
-        if (!data || !data.targetSocketId || !data.state) {
-            console.error(`sendCurrentState inválido de socket ${socket.id}: datos faltantes.`);
-            return;
-        }
-        const senderInfo = connectedSockets.get(socket.id);
-        console.log(`Estado recibido de ${socket.id} (${senderInfo?.logicalVideoId || 'desconocido'}) para ${data.targetSocketId}:`, data.state);
-        io.to(data.targetSocketId).emit('applyInitialState', {
-            state: data.state,
-            fromMaster: true
-        });
+    // Medición de reloj: el cliente manda la hora local y recibe la del servidor
+    socket.on('timeSync', (ack) => {
+        if (typeof ack === 'function') ack(Date.now());
     });
 
-    socket.on('videoAction', (data) => {
-        // data = { action: 'play'/'pause'/'seek', time: ..., logicalVideoId: 'videoA' o 'videoB' que originó }
-        if (!data || !data.action || typeof data.time !== 'number' || !data.logicalVideoId) {
-            console.error(`videoAction inválida de socket ${socket.id}: datos faltantes o incorrectos.`);
-            return;
-        }
-        const originatorInfo = connectedSockets.get(socket.id);
-        const timeDisplay = typeof data.time === 'number' ? data.time.toFixed(2) : 'N/A';
-        console.log(`Acción '${data.action}' en t=${timeDisplay} originada por ${data.logicalVideoId} (socket ${socket.id}, tipo ${originatorInfo?.logicalVideoId || 'desconocido'})`);
-        
-        // Reenviar a todos los OTROS clientes
-        socket.broadcast.emit('videoAction', data);
+    socket.on('toggle', () => {
+        const now = Date.now();
+        if (now - state.lastToggleAt < config.toggleDebounceMs) return;
+        state.lastToggleAt = now;
+        state.half = 1 - state.half;
+        state.toggles++;
+        const origin = screens.get(socket.id)?.screen || socket.id;
+        console.log(`Toggle desde ${origin}: mitad ${state.half}`);
+        io.emit('state', publicState());
     });
 
-    socket.on('disconnect', () => {
-        const clientInfo = connectedSockets.get(socket.id);
-        if (clientInfo) {
-            console.log(`Socket ${socket.id} (${clientInfo.logicalVideoId}) desconectado.`);
-            connectedSockets.delete(socket.id);
-        } else {
-            console.log(`Socket ${socket.id} desconectado (no registrado o ya eliminado).`);
-        }
-        console.log(`Total conectados: ${connectedSockets.size}`);
+    // Cada pantalla informa periódicamente su desfase para la página /estado
+    socket.on('report', (report) => {
+        const info = screens.get(socket.id);
+        if (info && report && typeof report === 'object') info.report = { ...report, at: Date.now() };
     });
 
-    socket.on('error', (error) => {
-        console.error(`Error en socket ${socket.id}:`, error);
+    socket.on('disconnect', (reason) => {
+        const info = screens.get(socket.id);
+        screens.delete(socket.id);
+        console.log(`Pantalla desconectada: ${info?.screen || socket.id} (${reason}). Total: ${screens.size}`);
+    });
+});
+
+app.get('/api/estado', (req, res) => {
+    res.json({
+        half: state.half,
+        toggles: state.toggles,
+        lastToggleAt: state.lastToggleAt || null,
+        uptimeS: Math.round((Date.now() - startedAt) / 1000),
+        screens: Array.from(screens, ([id, info]) => ({ id, ...info })),
     });
 });
 
 // Rutas para las pantallas de video
-// Pero es bueno tenerlas por si se accede directamente.
 app.get('/screen1', (req, res) => res.sendFile(path.join(__dirname, 'public', 'screen1.html')));
 app.get('/screen2', (req, res) => res.sendFile(path.join(__dirname, 'public', 'screen2.html')));
+app.get('/estado', (req, res) => res.sendFile(path.join(__dirname, 'public', 'estado.html')));
 
-const PORT = process.env.PORT || 8080;
-httpServer.listen(PORT, () => {
+// Todas las IPv4 de la red local, con el nombre del adaptador (en Windows suele haber
+// adaptadores virtuales, así que conviene ver la lista completa)
+function localAddresses() {
+    const result = [];
+    for (const [name, nets] of Object.entries(os.networkInterfaces())) {
+        for (const net of nets || []) {
+            if (net.family === 'IPv4' && !net.internal) result.push({ name, address: net.address });
+        }
+    }
+    return result;
+}
+
+httpServer.listen(config.port, () => {
     console.log(`DICEN - OBRA`);
     console.log(`Servidor Online`);
-
-    const networkInterfaces = os.networkInterfaces();
-    let localIp = null;
-
-    for (const name of Object.keys(networkInterfaces)) {
-        for (const net of networkInterfaces[name]) {
-            if (net.family === 'IPv4' && !net.internal) {
-                localIp = net.address;
-                break;
-            }
-        }
-        if (localIp) break;
-    }
-
     console.log('Puedes acceder a la aplicación en tu navegador:');
-    console.log(`- En esta computadora: http://localhost:${PORT}`);
-    if (localIp) {
-        console.log(`- En otros dispositivos de la misma red: http://${localIp}:${PORT}`);
+    console.log(`- En esta computadora: http://localhost:${config.port}`);
+    const addresses = localAddresses();
+    if (addresses.length) {
+        for (const { name, address } of addresses) {
+            console.log(`- En otros dispositivos de la red (${name}): http://${address}:${config.port}`);
+        }
     } else {
         console.log('- No se pudo detectar la IP local para otros dispositivos.');
     }
+    console.log(`- Estado de la obra: http://localhost:${config.port}/estado`);
 });

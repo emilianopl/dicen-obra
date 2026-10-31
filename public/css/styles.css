@@ -19,10 +19,23 @@ html, body {
 }
 
 .video-wrapper video {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
+    opacity: 0; /* El video de atrás espera invisible; el cambio es instantáneo, sin transición */
+}
+
+.video-wrapper video.visible {
+    opacity: 1;
+}
+
+/* En sala no se ve el puntero, y el toque en pantallas táctiles no espera el doble toque */
+body.screen-page,
+body.screen-page button {
+    cursor: none;
 }
 
 .overlay-button { /* Botón transparente para saltar */
@@ -36,6 +49,8 @@ html, body {
     z-index: 10;
     border: none;
     outline: none;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .initial-play-btn { /* Botón de "Iniciar Video" */
@@ -49,7 +64,6 @@ html, body {
     background-color: rgba(30, 30, 30, 0.8);
     border: 2px solid rgba(255, 255, 255, 0.8);
     border-radius: 12px;
-    cursor: pointer;
     z-index: 20; /* Encima del overlay-button */
     transition: opacity 0.4s ease-in-out, transform 0.4s ease-in-out;
     box-shadow: 0 4px 15px rgba(0,0,0,0.3);
@@ -137,3 +151,44 @@ body.menu-page {
     font-size: 0.85em;
     color: #7f8c8d;
 }
+.menu-button.secondary {
+    background-color: transparent;
+    border: 1px solid #3498db;
+}
+
+/* === Página de estado (estado.html) === */
+body.status-page {
+    background: #111;
+    color: #eee;
+    overflow-y: auto;
+    padding: 24px;
+    box-sizing: border-box;
+}
+
+.status-page h1 {
+    font-weight: 300;
+    margin: 0 0 8px;
+}
+
+.status-page .summary {
+    color: #aaa;
+    margin-bottom: 24px;
+}
+
+.status-page table {
+    border-collapse: collapse;
+    width: 100%;
+    max-width: 900px;
+}
+
+.status-page th,
+.status-page td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid #333;
+    font-variant-numeric: tabular-nums;
+}
+
+.status-page .ok { color: #6c6; }
+.status-page .warn { color: #fc6; }
+.status-page .bad { color: #f66; }

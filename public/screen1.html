@@ -3,21 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Video Sync - Pantalla 1</title>
+    <title>Dicen - Pantalla 1</title>
     <link rel="stylesheet" href="/css/styles.css">
 </head>
-<body>
+<body class="screen-page">
     <div class="video-wrapper">
-        <video id="videoPlayer" data-logical-id="videoA" src="/videos/video1.mp4" preload="auto" playsinline loop></video>
-        <button id="initialPlayButton" class="initial-play-btn">▶️ Iniciar Video</button>
-        <button class="overlay-button" aria-label="Saltar en el Video"></button>
+        <!-- Dos copias del mismo archivo: una al frente y otra esperando para el relevo -->
+        <video class="visible" src="/videos/video1.mp4" preload="auto" playsinline></video>
+        <video src="/videos/video1.mp4" preload="auto" playsinline muted></video>
+        <button id="initialPlayButton" class="initial-play-btn hidden">▶ Iniciar</button>
+        <button class="overlay-button" aria-label="Play / Pausa"></button>
     </div>
 
-    <script src="/socket.io/socket.io.js"></script>
     <script>
-        const LOCAL_VIDEO_LOGICAL_ID = 'videoA';
-        const LOCAL_VIDEO_ELEMENT_ID = 'videoPlayer';
+        const SCREEN_ID = 'screen1';
     </script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/js/sync-math.js"></script>
     <script src="/js/main.js"></script>
 </body>
 </html>
