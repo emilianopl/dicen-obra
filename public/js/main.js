@@ -146,24 +146,46 @@ document.addEventListener('DOMContentLoaded', () => {
 
     localVideo.addEventListener('play', () => sendVideoEventToServer('play'));
     localVideo.addEventListener('pause', () => sendVideoEventToServer('pause'));
-    localVideo.addEventListener('seeked', () => sendVideoEventToServer('seek'));
+    // El 'seek' se envía solo desde el salto del overlay: el evento 'seeked' también
+    // se dispara al dar la vuelta el loop y al aplicar seeks remotos, y eso generaba rebotes.
+
+    // Reintenta play() sin bloquear la pantalla (un alert() en kiosco deja un modal colgado)
+    function playWithRetry(attempt = 1) {
+        return localVideo.play().catch(e => {
+            console.warn(`Error al reproducir (intento ${attempt}):`, e);
+            if (attempt < 5) {
+                return new Promise(resolve => setTimeout(resolve, 1000 * attempt))
+                    .then(() => playWithRetry(attempt + 1));
+            }
+            throw e;
+        });
+    }
 
     if (initialPlayButton) {
         initialPlayButton.addEventListener('click', () => {
             console.log('Botón de Play Inicial presionado.');
-            localVideo.play().then(() => {
+            playWithRetry().then(() => {
                 console.log('Reproducción iniciada por el botón inicial.');
                 initialPlayButton.classList.add('hidden');
                 // El evento 'play' del video se encargará de llamar a sendVideoEventToServer
             }).catch(e => {
-                console.error("Error al intentar reproducir con el botón inicial:", e);
-                alert("No se pudo iniciar el video. Verifica los permisos del navegador o actualiza la página.");
+                console.error("No se pudo iniciar el video con el botón inicial:", e);
             });
         });
     }
 
+    // Ignora clics repetidos dentro de esta ventana (toques dobles o insistentes)
+    const JUMP_DEBOUNCE_MS = 400;
+    let lastJumpAt = 0;
+
     if (overlayButton) {
         overlayButton.addEventListener('click', () => {
+            const now = Date.now();
+            if (now - lastJumpAt < JUMP_DEBOUNCE_MS) {
+                console.log('Clic ignorado (debounce).');
+                return;
+            }
+
             if (initialPlayButton && !initialPlayButton.classList.contains('hidden')) {
                 console.log("Botón de play inicial todavía visible, no ejecutar salto. Clickea el botón de play primero.");
                 // Opcionalmente, hacer que este click también funcione como el initialPlayButton si está visible
@@ -175,18 +197,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.warn("Metadatos/Duración del video no disponibles para el salto.");
                 return;
             }
+            lastJumpAt = now;
             const jumpAmount = localVideo.duration / 2;
-            let newTime = localVideo.currentTime + jumpAmount;
+            // Dar la vuelta en vez de topear al final: desde la segunda mitad vuelve a la primera
+            const newTime = (localVideo.currentTime + jumpAmount) % localVideo.duration;
 
-            if (newTime >= localVideo.duration) {
-                newTime = localVideo.duration - 0.01; // Ir casi al final para evitar problemas
-                if (newTime < 0) newTime = 0; // En caso de que la duración sea extremadamente corta
-            }
-            
             console.log(`Botón de salto. Tiempo actual: ${localVideo.currentTime.toFixed(2)}, Duración: ${localVideo.duration.toFixed(2)}, Salto: ${jumpAmount.toFixed(2)}, Nuevo Tiempo: ${newTime.toFixed(2)}`);
-            localVideo.currentTime = newTime; // Esto disparará el evento 'seeked'
+            localVideo.currentTime = newTime;
+            sendVideoEventToServer('seek');
             if (localVideo.paused) { // Si estaba pausado, que siga reproduciendo desde el nuevo punto
-                localVideo.play().catch(e => console.warn("Error al intentar reproducir después del salto:", e));
+                playWithRetry().catch(e => console.warn("Error al intentar reproducir después del salto:", e));
                 // El evento 'play' también llamará a sendVideoEventToServer
             }
         });
