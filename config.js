@@ -11,6 +11,8 @@ module.exports = {
     toggleDebounceMs: num('DICEN_TOGGLE_DEBOUNCE_MS', 400),
     // Parámetros que el servidor manda a cada pantalla
     sync: {
+        // "apilado": pausa arriba y play abajo, audio de 4 canales. "mitades": pausa y play uno después del otro
+        format: process.env.DICEN_FORMATO === 'mitades' ? 'mitades' : 'apilado',
         hardSeekThreshold: num('DICEN_HARD_SEEK_S', 1.0),   // desfase (s) a partir del cual se hace seek
         deadband: num('DICEN_DEADBAND_S', 0.03),            // desfase (s) que se tolera sin corregir
         gain: num('DICEN_GAIN', 0.5),                        // cuánto se acelera/frena por segundo de desfase

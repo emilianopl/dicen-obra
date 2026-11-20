@@ -4,7 +4,8 @@ Aplicación de sincronización de la videoinstalación *Dicen*. Dos pantallas, u
 
 ## Cómo funciona
 
-- Cada pantalla reproduce un único archivo con dos mitades de igual duración, pegadas: la primera es el estado inicial y la segunda el otro estado. El clic cambia de mitad en las dos pantallas a la vez.
+- Cada pantalla reproduce un único archivo **apilado**: imagen de 1920 x 2160 con el estado pausa arriba y el estado play abajo, y audio de 4 canales (delanteros FL/FR = pausa, traseros BL/BR = play). Se ve una mitad de la imagen y suena un par de canales; el clic cambia de mitad y de canales en las dos pantallas a la vez, sin saltar en el tiempo (así el cambio es instantáneo).
+- Sigue funcionando el formato anterior (pausa y play pegados uno después del otro en el tiempo) con `DICEN_FORMATO=mitades`.
 - El servidor (`server.js`) es la fuente de verdad: guarda qué mitad se ve y un reloj de referencia. Cada pantalla calcula en qué segundo debería estar a partir de ese reloj, así que no depende de la otra.
 - Cada pantalla tiene dos `<video>` con el mismo archivo. Uno se ve y suena; el otro espera listo atrás. El cambio de mitad y la vuelta del bucle se hacen preparando el de atrás y recién ahí intercambiándolos, para que no haya cortes ni cuadros negros.
 - Cada medio segundo, cada pantalla compara su posición con la del reloj y ajusta la velocidad entre 0,95 y 1,05 para corregir la deriva. Si se desfasa más de 1 segundo, hace un seek.
@@ -20,12 +21,12 @@ npm install
 npm start
 ```
 
-Los videos no están en el repositorio. Copiarlos a `public/videos/`:
+Los videos no están en el repositorio. Copiarlos a `public/videos/` con estos nombres, en cada PC:
 
-- `public/videos/video1.mp4`: pantalla 1
-- `public/videos/video2.mp4`: pantalla 2
+- `public/videos/video1.mp4`: pantalla 1 (Narradores, `narradores_apilado.mp4`)
+- `public/videos/video2.mp4`: pantalla 2 (Detenidos, `detenidos_apilado.mp4`)
 
-Los dos archivos tienen que durar exactamente lo mismo, y en cada uno las dos mitades también.
+Formato esperado: H.264, 1920 x 2160, pausa arriba y play abajo, audio AAC de 4 canales (quad) con pausa en FL/FR y play en BL/BR. Los dos archivos tienen que durar exactamente lo mismo: la duración del archivo es una vuelta de la obra.
 
 ## Montaje
 
@@ -37,7 +38,7 @@ Los dos archivos tienen que durar exactamente lo mismo, y en cada uno las dos mi
    En la PC que corre el servidor, se puede usar `localhost`.
 3. Revisar `http://<ip-del-servidor>:8080/estado`: muestra las pantallas conectadas, la mitad actual y el desfase de cada una.
 
-Los scripts de kiosco abren Chrome con `--autoplay-policy=no-user-gesture-required`, para que el video arranque con sonido sin tocar nada. Sin esa opción, el navegador bloquea el audio y aparece un botón "Iniciar" que hay que tocar una vez.
+Los scripts de kiosco abren Chrome con `--autoplay-policy=no-user-gesture-required`, para que el video arranque con sonido sin tocar nada. Sin esa opción, el navegador bloquea el audio y aparece un botón "Iniciar" que hay que tocar una vez (el video sigue, pero sin sonido hasta ese toque).
 
 Para arrancar todo automáticamente al prender las PCs:
 
@@ -53,6 +54,7 @@ Por variables de entorno. Copiar `.env.example` a `.env` y arrancar con `node --
 | Variable | Por defecto | Qué hace |
 | --- | --- | --- |
 | `PORT` | 8080 | Puerto del servidor |
+| `DICEN_FORMATO` | apilado | `apilado` (pausa arriba, play abajo, audio de 4 canales) o `mitades` (pausa y play uno después del otro) |
 | `DICEN_TOGGLE_DEBOUNCE_MS` | 400 | Ventana en la que se ignoran clics repetidos |
 | `DICEN_HARD_SEEK_S` | 1.0 | Desfase a partir del cual se hace seek en vez de ajustar la velocidad |
 | `DICEN_DEADBAND_S` | 0.03 | Desfase que se tolera sin corregir |

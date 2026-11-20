@@ -1,5 +1,5 @@
 // server.js
-// El servidor es la fuente de verdad: guarda qué mitad del video se ve (pausa o play)
+// El servidor es la fuente de verdad: guarda qué estado se ve (pausa o play)
 // y un reloj de referencia. Las pantallas calculan su posición a partir de ese reloj,
 // así que no dependen unas de otras y se corrigen solas si se desfasan o se reconectan.
 const express = require('express');
@@ -23,7 +23,7 @@ app.get('/', (req, res) => {
 
 // Estado compartido de la obra
 const state = {
-    half: 0,              // 0 = primera mitad del archivo, 1 = segunda mitad
+    half: 0,              // 0 = pausa, 1 = play (arriba/abajo en el apilado, o primera/segunda mitad)
     epoch: Date.now(),    // instante (ms) en que ambas mitades estaban en su segundo 0
     toggles: 0,
     lastToggleAt: 0,
@@ -57,7 +57,7 @@ io.on('connection', (socket) => {
         state.half = 1 - state.half;
         state.toggles++;
         const origin = screens.get(socket.id)?.screen || socket.id;
-        console.log(`Toggle desde ${origin}: mitad ${state.half}`);
+        console.log(`Toggle desde ${origin}: ${state.half === 1 ? 'play' : 'pausa'}`);
         io.emit('state', publicState());
     });
 

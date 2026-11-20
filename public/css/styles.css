@@ -32,6 +32,21 @@ html, body {
     opacity: 1;
 }
 
+/* Formato apilado: el video ocupa el doble de alto de la pantalla y se muestra
+   la mitad de arriba (pausa) o la de abajo (play). Cambio instantáneo, sin seek. */
+.video-wrapper.apilado video {
+    inset: auto;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 200%;
+    transform: translateY(0);
+}
+
+.video-wrapper.apilado.estado-play video {
+    transform: translateY(-50%);
+}
+
 /* En sala no se ve el puntero, y el toque en pantallas táctiles no espera el doble toque */
 body.screen-page,
 body.screen-page button {

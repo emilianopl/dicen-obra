@@ -1,7 +1,12 @@
 // public/js/main.js
-// Cada pantalla tiene dos <video> con el mismo archivo (pausa y play pegados en dos mitades).
-// Uno se ve y suena; el otro espera listo en segundo plano. Así, el cambio de mitad y la
-// vuelta del bucle se hacen sin cortes: se prepara el de atrás y recién ahí se intercambian.
+// Cada pantalla tiene dos <video> con el mismo archivo. Uno se ve y suena; el otro espera
+// listo en segundo plano para la vuelta del bucle, que así se hace sin cortes.
+//
+// Dos formatos de archivo (DICEN_FORMATO en el servidor):
+// - "apilado" (por defecto): imagen 1920x2160 con pausa arriba y play abajo, y audio de
+//   4 canales (FL/FR = pausa, BL/BR = play). El toque no hace seek: solo cambia qué mitad
+//   de la imagen se muestra y qué par de canales suena.
+// - "mitades": pausa y play pegados uno después del otro; el toque salta a la otra mitad.
 document.addEventListener('DOMContentLoaded', () => {
     if (typeof SCREEN_ID === 'undefined' || !window.DicenSync) {
         console.error('Falta SCREEN_ID en el HTML o no se cargó /js/sync-math.js.');
@@ -35,9 +40,74 @@ document.addEventListener('DOMContentLoaded', () => {
     let seekLead = 0.15;         // estimación (s) de lo que tarda un seek + play; se ajusta sola
     let lastDrift = 0;
     let playBlocked = false;     // el navegador bloqueó el autoplay con sonido
+    let videoDuration = null;
+    const wrapper = document.querySelector('.video-wrapper');
+    const isStacked = () => syncConfig.format !== 'mitades';
 
     const serverNow = () => Date.now() + clockOffset;
     const ready = () => state !== null && halfDuration !== null;
+
+    // Duración de una vuelta: el archivo entero (apilado) o la mitad (mitades)
+    function updateDuration() {
+        if (videoDuration === null) return;
+        halfDuration = isStacked() ? videoDuration : videoDuration / 2;
+    }
+    // Dónde empieza la vuelta dentro del archivo para el estado actual
+    const segBase = () => (isStacked() ? 0 : state.half * halfDuration);
+    const preparedKey = () => (isStacked() ? 'apilado' : String(state.half));
+
+    // --- Formato apilado: encuadre y audio ---
+    // Cada <video> pasa por Web Audio: los 4 canales se separan, pausa (0-1) y play (2-3)
+    // van a ganancias distintas y salen en estéreo. Las dos ganancias son compartidas.
+    let audioCtx = null;
+    let pauseGain = null;
+    let playGain = null;
+    function setupAudio() {
+        if (audioCtx || !isStacked()) return;
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) { console.warn('Sin Web Audio: se escuchan los 4 canales mezclados.'); return; }
+        try {
+            audioCtx = new Ctx();
+            pauseGain = audioCtx.createGain();
+            playGain = audioCtx.createGain();
+            pauseGain.connect(audioCtx.destination);
+            playGain.connect(audioCtx.destination);
+            for (const p of players) {
+                const source = audioCtx.createMediaElementSource(p);
+                const splitter = audioCtx.createChannelSplitter(4);
+                const pauseMerge = audioCtx.createChannelMerger(2);
+                const playMerge = audioCtx.createChannelMerger(2);
+                source.connect(splitter);
+                splitter.connect(pauseMerge, 0, 0);
+                splitter.connect(pauseMerge, 1, 1);
+                splitter.connect(playMerge, 2, 0);
+                splitter.connect(playMerge, 3, 1);
+                pauseMerge.connect(pauseGain);
+                playMerge.connect(playGain);
+            }
+            applyLook(true);
+        } catch (e) {
+            console.error('No se pudo armar el audio de 4 canales:', e);
+        }
+    }
+
+    function resumeAudio() {
+        if (audioCtx && audioCtx.state !== 'running') audioCtx.resume().catch(() => {});
+    }
+
+    // Muestra la mitad de arriba (pausa) o la de abajo (play) y abre el par de canales que va
+    function applyLook(immediate) {
+        if (!wrapper) return;
+        const stacked = isStacked();
+        wrapper.classList.toggle('apilado', stacked);
+        const play = stacked && state && state.half === 1;
+        wrapper.classList.toggle('estado-play', play);
+        if (!audioCtx) return;
+        const t = audioCtx.currentTime;
+        const tau = immediate ? 0.001 : 0.015; // fundido corto para que no haga clic
+        pauseGain.gain.setTargetAtTime(play ? 0 : 1, t, tau);
+        playGain.gain.setTargetAtTime(play ? 1 : 0, t, tau);
+    }
 
     function setVisible(el) {
         for (const p of players) {
@@ -48,6 +118,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function tryPlay(el) {
+        resumeAudio();
         return el.play().catch(e => {
             console.warn(`No se pudo reproducir: ${e.name}`);
             if (e.name === 'NotAllowedError') {
@@ -60,7 +131,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Tiempo del video que corresponde ahora, en la mitad actual
     function currentTarget() {
-        return Sync.targetTime(serverNow(), state.epoch, halfDuration, state.half);
+        return Sync.positionInHalf(serverNow(), state.epoch, halfDuration) + segBase();
     }
 
     // Deja el video de atrás en el comienzo de la mitad actual, listo para la vuelta del bucle
@@ -68,8 +139,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!ready()) return;
         standby.pause();
         standby.playbackRate = 1;
-        standby.currentTime = state.half * halfDuration;
-        standby.dataset.preparedHalf = String(state.half);
+        standby.currentTime = segBase();
+        standby.dataset.preparedHalf = preparedKey();
     }
 
     function promote(next, startedAt) {
@@ -93,7 +164,7 @@ document.addEventListener('DOMContentLoaded', () => {
         switching = true;
         switchStartedAt = performance.now();
         const next = standby;
-        const base = state.half * halfDuration;
+        const base = segBase();
         let pos = currentTarget() - base + seekLead;
         if (pos >= halfDuration) pos -= halfDuration;
         const startedAt = performance.now();
@@ -104,7 +175,7 @@ document.addEventListener('DOMContentLoaded', () => {
             tryPlay(next).then(() => {
                 if (id !== switchId) return;
                 promote(next, startedAt);
-                log(`Cambio a mitad ${state.half} (seek ${(performance.now() - startedAt).toFixed(0)} ms)`);
+                log(`Video en posición, estado ${state.half} (seek ${(performance.now() - startedAt).toFixed(0)} ms)`);
             }).catch(() => { if (id === switchId) switching = false; });
         }, { once: true });
     }
@@ -113,9 +184,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function watchBoundary() {
         requestAnimationFrame(watchBoundary);
         if (!ready() || switching || playBlocked) return;
-        const end = (state.half + 1) * halfDuration;
+        const end = segBase() + halfDuration;
         if (active.currentTime < end - BOUNDARY_MARGIN_S && !active.ended) return;
-        if (standby.dataset.preparedHalf === String(state.half) && !standby.seeking) {
+        if (standby.dataset.preparedHalf === preparedKey() && !standby.seeking) {
             const id = ++switchId;
             switching = true;
             switchStartedAt = performance.now();
@@ -137,8 +208,12 @@ document.addEventListener('DOMContentLoaded', () => {
             switchToTarget();
             return;
         }
+        // Audio bloqueado por el navegador (falta --autoplay-policy): se pide un toque
+        if (audioCtx && audioCtx.state === 'suspended' && initialPlayButton) {
+            initialPlayButton.classList.remove('hidden');
+        }
         if (!ready() || switching || playBlocked) return;
-        const pos = active.currentTime - state.half * halfDuration;
+        const pos = active.currentTime - segBase();
         if (pos < -BOUNDARY_MARGIN_S || pos > halfDuration + BOUNDARY_MARGIN_S) {
             switchToTarget(); // está en la mitad equivocada
             return;
@@ -196,13 +271,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!clockSamples.length && typeof s.serverNow === 'number') clockOffset = s.serverNow - Date.now();
         if (s.sync) {
             syncConfig = { ...syncConfig, ...s.sync };
+            updateDuration();
+            setupAudio();
             scheduleCorrection();
             scheduleClockSync();
         }
-        const changed = !state || state.half !== s.half || state.epoch !== s.epoch;
+        const first = !state;
+        const halfChanged = !first && state.half !== s.half;
+        const epochChanged = !first && state.epoch !== s.epoch;
         state = { half: s.half, epoch: s.epoch };
-        log(`Estado: mitad ${state.half}`);
-        if (changed) switchToTarget();
+        log(`Estado: ${state.half === 1 ? 'play' : 'pausa'}`);
+        applyLook(first);
+        if (first || epochChanged || (halfChanged && !isStacked())) switchToTarget();
     });
 
     socket.on('disconnect', (reason) => console.warn(`Desconectado del servidor: ${reason}`));
@@ -218,14 +298,17 @@ document.addEventListener('DOMContentLoaded', () => {
             playing: !active.paused,
             blocked: playBlocked,
             seekLead: Number(seekLead.toFixed(3)),
+            format: isStacked() ? 'apilado' : 'mitades',
+            audio: audioCtx ? audioCtx.state : 'sin web audio',
         });
     }, 2000);
 
     // --- Videos ---
     function onMetadata() {
         if (players.some(p => p.readyState < HTMLMediaElement.HAVE_METADATA)) return;
-        halfDuration = active.duration / 2;
-        log(`Duración ${active.duration.toFixed(2)} s, mitad ${halfDuration.toFixed(2)} s`);
+        videoDuration = active.duration;
+        updateDuration();
+        log(`Duración ${active.duration.toFixed(2)} s, vuelta ${halfDuration.toFixed(2)} s`);
         switchToTarget();
     }
     for (const p of players) {
@@ -240,6 +323,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const now = Date.now();
         if (now - lastToggleAt < syncConfig.toggleDebounceMs) return;
         lastToggleAt = now;
+        if (audioCtx && audioCtx.state !== 'running') {
+            // El primer toque solo habilita el sonido (el navegador lo exige)
+            unlock();
+            return;
+        }
         if (playBlocked) {
             unlock();
             return;
@@ -249,12 +337,14 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (state) {
             // Sin servidor la pantalla sigue funcionando sola; al reconectar manda el servidor
             state = { ...state, half: 1 - state.half };
-            switchToTarget();
+            applyLook(false);
+            if (!isStacked()) switchToTarget();
         }
     }
 
     function unlock() {
         playBlocked = false;
+        resumeAudio();
         if (initialPlayButton) initialPlayButton.classList.add('hidden');
         switchToTarget();
     }
