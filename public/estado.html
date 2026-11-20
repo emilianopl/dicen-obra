@@ -11,7 +11,7 @@
     <p class="summary" id="summary">Cargando…</p>
     <table>
         <thead>
-            <tr><th>Pantalla</th><th>Mitad</th><th>Desfase</th><th>Velocidad</th><th>Reproduciendo</th><th>Último reporte</th></tr>
+            <tr><th>Pantalla</th><th>Estado</th><th>Desfase</th><th>Velocidad</th><th>Reproduciendo</th><th>Último reporte</th></tr>
         </thead>
         <tbody id="screens"></tbody>
     </table>
@@ -36,7 +36,7 @@
                 const data = await res.json();
                 const last = data.lastToggleAt ? new Date(data.lastToggleAt).toLocaleTimeString() : 'nunca';
                 document.getElementById('summary').textContent =
-                    `Mitad actual: ${data.half} · Cambios: ${data.toggles} (último ${last}) · Servidor activo hace ${Math.round(data.uptimeS / 60)} min`;
+                    `Estado actual: ${data.half === 1 ? 'play' : 'pausa'} · Cambios: ${data.toggles} (último ${last}) · Servidor activo hace ${Math.round(data.uptimeS / 60)} min`;
                 const tbody = document.getElementById('screens');
                 tbody.replaceChildren();
                 for (const s of data.screens) {
@@ -44,7 +44,7 @@
                     const tr = document.createElement('tr');
                     tr.append(
                         cell(s.screen),
-                        cell(r ? r.half : '-'),
+                        cell(r ? (r.half === 1 ? 'play' : 'pausa') + (r.audio && r.audio !== 'running' ? ` · audio: ${r.audio}` : '') : '-'),
                         r ? cell(`${(r.drift * 1000).toFixed(0)} ms`, driftClass(r.drift)) : cell('-'),
                         cell(r ? r.rate.toFixed(3) : '-'),
                         r ? cell(r.blocked ? 'bloqueado (tocar Iniciar)' : r.playing ? 'sí' : 'no', r.blocked || !r.playing ? 'bad' : 'ok') : cell('-'),
