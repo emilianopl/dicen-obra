@@ -361,6 +361,20 @@ document.addEventListener('DOMContentLoaded', () => {
     if (overlayButton) overlayButton.addEventListener('pointerup', onToggle);
     if (initialPlayButton) initialPlayButton.addEventListener('pointerup', (e) => { e.preventDefault(); unlock(); });
 
+    // Si el servidor de estado no responde al arrancar (IP equivocada, firewall, servidor
+    // apagado), la pantalla no se queda quieta: arranca sola en pausa y, cuando el
+    // servidor aparece, se sincroniza con él.
+    const STANDALONE_AFTER_MS = 4000;
+    setTimeout(() => {
+        if (state) return;
+        console.warn('Sin respuesta del servidor de estado: la pantalla arranca sola.');
+        state = { half: 0, epoch: Date.now() };
+        updateDuration();
+        setupAudio();
+        applyLook(true);
+        switchToTarget();
+    }, STANDALONE_AFTER_MS);
+
     setVisible(active);
     scheduleCorrection();
     requestAnimationFrame(watchBoundary);
