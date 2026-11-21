@@ -1,0 +1,3 @@
+Copiar acá los videos (no van en git):
+- video1.mp4 = narradores_apilado.mp4 (pantalla 1)
+- video2.mp4 = detenidos_apilado.mp4 (pantalla 2)

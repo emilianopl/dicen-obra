@@ -12,37 +12,53 @@ Aplicación de sincronización de la videoinstalación *Dicen*. Dos pantallas, u
 - Si una pantalla pierde la conexión, sigue reproduciendo (y responde al clic por su cuenta). Al reconectarse, se pone al día sola.
 - Los clics repetidos dentro de 400 ms se ignoran, tanto en la pantalla como en el servidor. Eso también resuelve el clic simultáneo de ambos lados.
 
-## Instalación
+## Cómo se reparte entre las PCs
 
-Requiere Node.js 22 o superior.
+- **Cada PC reproduce sus videos desde su propio disco**: la pantalla se abre siempre desde `http://localhost:8080`, o sea, del servidor que corre en la misma PC, y el video sale de su carpeta `public/videos/`.
+- **Por la red solo viaja el estado** (pausa/play, el reloj de referencia y los toques). Una de las PCs hace de *servidor de estado*; la pantalla de la otra PC se conecta a ella con `?servidor=IP`.
+- Por eso **las dos PCs tienen la instalación completa** (código + videos) y corren `npm start`.
 
-```bash
-npm install
-npm start
-```
+## Instalación (en cada PC)
 
-Los videos no están en el repositorio. Copiarlos a `public/videos/` con estos nombres, en cada PC:
+1. Instalar [Node.js](https://nodejs.org) 22 o superior, [Git](https://git-scm.com) y Google Chrome.
+2. Clonar e instalar:
 
-- `public/videos/video1.mp4`: pantalla 1 (Narradores, `narradores_apilado.mp4`)
-- `public/videos/video2.mp4`: pantalla 2 (Detenidos, `detenidos_apilado.mp4`)
+   ```bash
+   git clone https://github.com/emilianopl/dicen-obra.git
+   cd dicen-obra
+   npm install
+   ```
 
-Formato esperado: H.264, 1920 x 2160, pausa arriba y play abajo, audio AAC de 4 canales (quad) con pausa en FL/FR y play en BL/BR. Los dos archivos tienen que durar exactamente lo mismo: la duración del archivo es una vuelta de la obra.
+3. Copiar los videos (no están en git) a `public/videos/`, con estos nombres:
+
+   - `public/videos/video1.mp4`: pantalla 1, Narradores (`narradores_apilado.mp4`)
+   - `public/videos/video2.mp4`: pantalla 2, Detenidos (`detenidos_apilado.mp4`)
+
+   Conviene copiar los dos videos en las dos PCs, así cualquiera puede mostrar cualquier pantalla o hacer de servidor de estado.
+
+   Formato esperado: H.264, 1920 x 2160, pausa arriba y play abajo, audio AAC de 4 canales (quad) con pausa en FL/FR y play en BL/BR. Los dos archivos tienen que durar exactamente lo mismo: la duración del archivo es una vuelta de la obra.
+
+Para actualizar más adelante: `git pull` y `npm install` en la carpeta de la obra.
 
 ## Montaje
 
-1. Elegir una de las PCs como servidor y arrancarlo con `npm start` (o `scripts/server-windows.bat`, que lo reinicia si se cierra). Al arrancar muestra las direcciones IP de la red local.
-2. En cada PC, abrir su pantalla en modo kiosco:
-   - Windows: `scripts\kiosk-windows.bat screen1 192.168.0.10`
-   - Linux: `scripts/kiosk-linux.sh screen2 192.168.0.10`
+1. En **las dos PCs**, arrancar el servidor local con `scripts\server-windows.bat` (lo reinicia si se cierra) o `npm start`. Al arrancar muestra las IP de la red local.
+2. Elegir una PC como **servidor de estado** (por ejemplo la de Narradores) y anotar su IP, por ejemplo `192.168.0.10`.
+3. Abrir cada pantalla en modo kiosco:
+   - En la PC servidor de estado: `scripts\kiosk-windows.bat screen1`
+   - En la otra PC: `scripts\kiosk-windows.bat screen2 192.168.0.10`
+   - En Linux, lo mismo con `scripts/kiosk-linux.sh`.
+4. Revisar `http://192.168.0.10:8080/estado`: tienen que aparecer las dos pantallas, con el estado (pausa/play) y el desfase de cada una.
 
-   En la PC que corre el servidor, se puede usar `localhost`.
-3. Revisar `http://<ip-del-servidor>:8080/estado`: muestra las pantallas conectadas, la mitad actual y el desfase de cada una.
+La primera vez, Windows puede preguntar si deja que Node use la red: hay que aceptar (al menos en la PC servidor de estado, para que la otra se pueda conectar al puerto 8080).
 
 Los scripts de kiosco abren Chrome con `--autoplay-policy=no-user-gesture-required`, para que el video arranque con sonido sin tocar nada. Sin esa opción, el navegador bloquea el audio y aparece un botón "Iniciar" que hay que tocar una vez (el video sigue, pero sin sonido hasta ese toque).
 
+Si la red se corta, cada pantalla sigue reproduciendo y respondiendo a los toques por su cuenta; al volver la red se pone al día sola.
+
 Para arrancar todo automáticamente al prender las PCs:
 
-- Windows: poner accesos directos a `server-windows.bat` (solo en la PC servidor) y a `kiosk-windows.bat` en la carpeta de Inicio (`Win + R`, `shell:startup`).
+- Windows: poner accesos directos a `server-windows.bat` y a `kiosk-windows.bat` (con sus parámetros) en la carpeta de Inicio (`Win + R`, `shell:startup`), en las dos PCs.
 - Linux: instalar `scripts/dicen.service` como servicio de systemd y agregar `kiosk-linux.sh` al inicio de sesión.
 
 Se recomienda conectar las PCs por cable o con un router dedicado, en lugar del Wi-Fi del lugar.

@@ -25,3 +25,5 @@ Thumbs.db
 # Archivos de configuración de editores e IDEs (opcional)
 .vscode/
 .idea/
+# Videos de la obra (se copian a mano, no van en git)
+public/videos/*.mp4

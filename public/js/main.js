@@ -236,7 +236,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- Reloj ---
-    const socket = io();
+    // Los videos siempre se leen de la PC local (la página se abre desde localhost).
+    // Por la red solo viaja el estado: con ?servidor=IP la pantalla se conecta al
+    // servidor de estado de otra PC; sin ese parámetro usa el servidor local.
+    const socket = io(stateServerUrl() || undefined);
+    function stateServerUrl() {
+        const remote = new URLSearchParams(location.search).get('servidor');
+        if (!remote) return null;
+        if (/^https?:\/\//.test(remote)) return remote;
+        return remote.includes(':') ? `http://${remote}` : `http://${remote}:${location.port || 8080}`;
+    }
 
     function syncClock() {
         if (!socket.connected) return;
