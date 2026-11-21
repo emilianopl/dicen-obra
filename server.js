@@ -11,7 +11,8 @@ const config = require('./config');
 
 const app = express();
 const httpServer = http.createServer(app);
-const io = new Server(httpServer);
+// Las pantallas de otras PCs se conectan desde su propia página local (otro origen)
+const io = new Server(httpServer, { cors: { origin: true } });
 
 // Servir archivos estáticos desde la carpeta 'public'
 app.use(express.static(path.join(__dirname, 'public')));
